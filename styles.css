@@ -1,0 +1,117 @@
+.ask-vault {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px;
+}
+
+.ask-vault__header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.ask-vault__header h2 {
+  font-size: var(--font-ui-large);
+  margin: 0 0 8px;
+}
+
+.ask-vault__header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.ask-vault__status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 10px;
+}
+
+.ask-vault__messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  min-height: 120px;
+  overflow-y: auto;
+}
+
+.ask-vault__system {
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.ask-vault__message {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: 8px 10px;
+}
+
+.ask-vault__message--user {
+  background: var(--background-secondary);
+}
+
+.ask-vault__role {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.ask-vault__body {
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.ask-vault__body.is-error {
+  color: var(--text-error);
+}
+
+.ask-vault__composer textarea {
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.ask-vault__controls {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ask-vault__controls label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ask-vault__controls select {
+  flex: 1;
+}
+
+.ask-vault__context {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-vault__composer button {
+  width: 100%;
+}
+
+.ask-vault__composer small {
+  color: var(--text-faint);
+  display: block;
+  margin-top: 6px;
+  text-align: right;
+}

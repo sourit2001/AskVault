@@ -5,5 +5,6 @@
   "minAppVersion": "1.7.0",
   "description": "Ask questions about your current note or vault using your local Codex CLI.",
   "author": "sourit2001",
+  "authorUrl": "https://github.com/sourit2001",
   "isDesktopOnly": true
 }

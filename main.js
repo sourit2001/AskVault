@@ -1,11 +1,15 @@
 const { FileSystemAdapter, ItemView, Notice, Plugin, PluginSettingTab, Setting } = require("obsidian");
 const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const readline = require("readline");
 
 const VIEW_TYPE = "ask-vault-view";
 const EXPORT_FOLDER = "Codex 对话";
-const DEFAULT_CODEX_PATH = "codex";
+const DEFAULT_CODEX_PATH = "";
 const DEFAULT_NODE_PATH = "";
+const CODEX_COMMAND = "codex";
 const SYSTEM_PROMPT = [
   "You answer questions about the Obsidian vault that is your current working directory.",
   "Follow the scope specified in each question: when it says current note only, use only the supplied note text; when it says whole vault, read Markdown notes as needed.",
@@ -14,7 +18,7 @@ const SYSTEM_PROMPT = [
 ].join(" ");
 
 class CodexVaultChatPlugin extends Plugin {
-  settings = { codexPath: DEFAULT_CODEX_PATH, nodePath: DEFAULT_NODE_PATH, model: "", effort: "" };
+  settings = { codexPath: DEFAULT_CODEX_PATH, nodePath: DEFAULT_NODE_PATH, model: "", effort: "", proxy: "" };
   vaultPath = "";
 
   async onload() {
@@ -51,6 +55,31 @@ class CodexVaultChatPlugin extends Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
   }
+
+  async loadAvailableModels() {
+    const client = this.createClient({
+      onNotification: () => {},
+      onLog: () => {},
+      onExit: () => {},
+    });
+    try {
+      await client.connect();
+      const result = await client.request("model/list", { includeHidden: false, limit: 100 });
+      return (result.data || []).filter((model) => !model.hidden);
+    } finally {
+      client.stop();
+    }
+  }
+
+  createClient(handlers) {
+    return new CodexAppServerClient(
+      this.settings.codexPath,
+      this.settings.nodePath,
+      this.vaultPath,
+      this.settings.proxy,
+      handlers
+    );
+  }
 }
 
 class CodexVaultChatView extends ItemView {
@@ -64,14 +93,11 @@ class CodexVaultChatView extends ItemView {
   sendButton = null;
   pendingAssistantEl = null;
   scopeEl = null;
-  modelEl = null;
-  effortEl = null;
   contextEl = null;
   contextKey = null;
   messages = [];
   usedContexts = new Set();
   connectionLogs = [];
-  availableModels = [];
 
   constructor(leaf, plugin) {
     super(leaf);
@@ -126,25 +152,6 @@ class CodexVaultChatView extends ItemView {
       this.contextKey = null;
       this.refreshContextLabel();
     });
-    const modelControls = composer.createDiv({ cls: "ask-vault__controls" });
-    modelControls.createEl("label", { text: "模型" });
-    this.modelEl = modelControls.createEl("select");
-    this.modelEl.createEl("option", { text: "Codex 默认", attr: { value: "" } });
-    this.modelEl.value = this.plugin.settings.model || "";
-    this.modelEl.addEventListener("change", async () => {
-      this.plugin.settings.model = this.modelEl.value;
-      this.plugin.settings.effort = "";
-      await this.plugin.saveSettings();
-      this.populateEffortOptions();
-    });
-    const effortControls = composer.createDiv({ cls: "ask-vault__controls" });
-    effortControls.createEl("label", { text: "思考深度" });
-    this.effortEl = effortControls.createEl("select");
-    this.populateEffortOptions();
-    this.effortEl.addEventListener("change", async () => {
-      this.plugin.settings.effort = this.effortEl.value;
-      await this.plugin.saveSettings();
-    });
     this.contextEl = composer.createDiv({ cls: "ask-vault__context" });
     this.refreshContextLabel();
     this.registerEvent(this.app.workspace.on("file-open", () => this.refreshContextLabel()));
@@ -187,29 +194,37 @@ class CodexVaultChatView extends ItemView {
   async connect() {
     this.setStatus("正在连接 Codex...");
     this.setBusy(true);
-    this.client = new CodexAppServerClient(
-      this.plugin.settings.codexPath,
-      this.plugin.settings.nodePath,
-      this.plugin.vaultPath,
-      {
-        onNotification: (message) => this.handleNotification(message),
-        onLog: (message) => this.connectionLogs.push(message),
-        onExit: (message) => {
-          this.setStatus("连接已断开");
-          this.setBusy(false);
-          this.addSystemMessage(message);
-        },
-      }
-    );
+    this.client = this.plugin.createClient({
+      onNotification: (message) => this.handleNotification(message),
+      onLog: (message) => {
+        this.connectionLogs.push(message);
+        const lower = message.toLowerCase();
+        if (lower.includes("error") || lower.includes("limit") || lower.includes("quota") || lower.includes("warning") || lower.includes("fail")) {
+          this.addSystemMessage(`[Codex CLI] ${message}`);
+        }
+      },
+      onExit: (message) => {
+        this.setStatus("连接已断开");
+        this.setBusy(false);
+        this.activeTurnId = null;
+        this.pendingAssistantEl = null;
+        this.addSystemMessage(message);
+      },
+    });
 
     try {
       this.connectionLogs = [];
       await this.client.connect();
-      await this.loadModels();
-      this.setStatus("已连接，当前 vault 可用于问答");
+      this.setStatus(`已连接：${this.client.launch.description}`);
+      if (this.client.launch.fallbackMessage) {
+        this.addSystemMessage(this.client.launch.fallbackMessage);
+      }
     } catch (error) {
       this.setStatus("连接失败");
       this.addSystemMessage(formatError(error));
+      if (this.client.launch) {
+        this.addSystemMessage(`尝试的启动方式：${this.client.launch.description}。可在 AskVault 设置中留空路径以启用自动查找。`);
+      }
       for (const message of this.connectionLogs) {
         this.addSystemMessage(`[Codex] ${message}`);
       }
@@ -364,58 +379,6 @@ class CodexVaultChatView extends ItemView {
     }
   }
 
-  async loadModels() {
-    try {
-      const result = await this.client.request("model/list", { includeHidden: false, limit: 100 });
-      this.availableModels = (result.data || []).filter((model) => !model.hidden);
-    } catch (error) {
-      this.availableModels = [];
-    }
-    this.populateModelOptions();
-    this.populateEffortOptions();
-  }
-
-  populateModelOptions() {
-    if (!this.modelEl) {
-      return;
-    }
-    const savedModel = this.plugin.settings.model || "";
-    this.modelEl.empty();
-    this.modelEl.createEl("option", { text: "Codex 默认", attr: { value: "" } });
-    for (const model of this.availableModels) {
-      const value = model.model || model.id;
-      if (value) {
-        this.modelEl.createEl("option", { text: value, attr: { value } });
-      }
-    }
-    if (savedModel && !this.availableModels.some((model) => (model.model || model.id) === savedModel)) {
-      this.modelEl.createEl("option", { text: `${savedModel} (已保存)`, attr: { value: savedModel } });
-    }
-    this.modelEl.value = savedModel;
-  }
-
-  populateEffortOptions() {
-    if (!this.effortEl) {
-      return;
-    }
-    const selectedModel = this.plugin.settings.model
-      ? this.availableModels.find((model) => (model.model || model.id) === this.plugin.settings.model)
-      : this.availableModels.find((model) => model.isDefault);
-    const supported = selectedModel?.supportedReasoningEfforts
-      ?.map((entry) => entry.reasoningEffort)
-      .filter(Boolean) || ["low", "medium", "high", "xhigh"];
-    const savedEffort = this.plugin.settings.effort || "";
-    this.effortEl.empty();
-    this.effortEl.createEl("option", { text: "Codex 默认", attr: { value: "" } });
-    for (const effort of supported) {
-      this.effortEl.createEl("option", { text: effort, attr: { value: effort } });
-    }
-    if (savedEffort && !supported.includes(savedEffort)) {
-      this.plugin.settings.effort = "";
-    }
-    this.effortEl.value = this.plugin.settings.effort || "";
-  }
-
   async saveConversation() {
     const messages = this.messages.filter((message) => message.text.trim());
     if (!messages.length) {
@@ -474,7 +437,8 @@ class CodexVaultChatView extends ItemView {
   handleNotification(message) {
     const params = message.params || {};
     if (message.method === "item/agentMessage/delta") {
-      if (this.activeTurnId && params.turnId !== this.activeTurnId) {
+      const turnId = params.turnId || params.item?.turnId;
+      if (turnId && this.activeTurnId && turnId !== this.activeTurnId) {
         return;
       }
       if (this.pendingAssistantEl) {
@@ -484,14 +448,39 @@ class CodexVaultChatView extends ItemView {
       }
       return;
     }
+    if (message.method === "item/completed") {
+      const item = params.item || {};
+      if (item.type === "agentMessage") {
+        const fullText = extractTextFromItem(item);
+        if (fullText && this.pendingAssistantEl) {
+          this.pendingAssistantEl.setText(fullText);
+          this.messages[this.messages.length - 1].text = fullText;
+          this.scrollToBottom();
+        }
+      }
+      return;
+    }
     if (message.method === "item/reasoning/summaryTextDelta") {
       this.setStatus("Codex 正在分析相关笔记...");
       return;
     }
-    if (message.method === "turn/completed" && params.turn?.id === this.activeTurnId) {
+    if (message.method === "turn/completed") {
+      const completedTurnId = params.turn?.id;
+      if (completedTurnId && this.activeTurnId && completedTurnId !== this.activeTurnId) {
+        return;
+      }
+      const turnStatus = params.turn?.status;
+      const turnError = params.turn?.error;
       if (this.pendingAssistantEl && !(this.pendingAssistantEl.textContent || "").trim()) {
-        this.pendingAssistantEl.setText("Codex 已完成，但没有返回可显示的文本。");
-        this.messages[this.messages.length - 1].text = "Codex 已完成，但没有返回可显示的文本。";
+        if (turnStatus === "failed" && turnError) {
+          const errMsg = `Codex 运行失败: ${turnError.message || JSON.stringify(turnError)}`;
+          this.pendingAssistantEl.setText(errMsg);
+          this.pendingAssistantEl.addClass("is-error");
+          this.messages[this.messages.length - 1].text = errMsg;
+        } else {
+          this.pendingAssistantEl.setText("Codex 已完成，但没有返回可显示的文本。");
+          this.messages[this.messages.length - 1].text = "Codex 已完成，但没有返回可显示的文本。";
+        }
       }
       this.pendingAssistantEl = null;
       this.activeTurnId = null;
@@ -537,10 +526,11 @@ class CodexVaultChatView extends ItemView {
 }
 
 class CodexAppServerClient {
-  constructor(codexPath, nodePath, cwd, handlers) {
+  constructor(codexPath, nodePath, cwd, proxy, handlers) {
     this.codexPath = codexPath;
     this.nodePath = nodePath;
     this.cwd = cwd;
+    this.proxy = proxy;
     this.handlers = handlers;
     this.process = null;
     this.reader = null;
@@ -549,11 +539,19 @@ class CodexAppServerClient {
   }
 
   async connect() {
-    const command = this.nodePath || this.codexPath;
-    const args = this.nodePath ? [this.codexPath, "app-server"] : ["app-server"];
+    this.launch = resolveCodexLaunch(this.codexPath, this.nodePath);
+    const command = this.launch.command;
+    const args = this.launch.args;
+    const env = { ...process.env };
+    if (this.proxy) {
+      env.HTTP_PROXY = this.proxy;
+      env.HTTPS_PROXY = this.proxy;
+      env.ALL_PROXY = this.proxy;
+    }
     this.process = spawn(command, args, {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      env: env,
     });
     this.process.stderr.on("data", (data) => {
       const text = data.toString("utf8").trim();
@@ -573,7 +571,7 @@ class CodexAppServerClient {
       clientInfo: {
         name: "ask_vault",
         title: "AskVault",
-        version: "0.1.0",
+        version: "0.1.2",
       },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
@@ -656,6 +654,9 @@ class CodexAppServerClient {
 }
 
 class CodexVaultChatSettings extends PluginSettingTab {
+  availableModels = [];
+  loadSequence = 0;
+
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -663,24 +664,130 @@ class CodexVaultChatSettings extends PluginSettingTab {
 
   display() {
     this.containerEl.empty();
+    this.containerEl.createEl("h2", { text: "AskVault 设置" });
     new Setting(this.containerEl)
       .setName("Codex executable")
-      .setDesc("用于启动 `codex app-server` 的完整路径。")
+      .setDesc("留空（推荐）时自动查找本机 Codex CLI。仅在自动检测失败时填写完整路径。")
       .addText((text) => {
-        text.setValue(this.plugin.settings.codexPath).onChange(async (value) => {
+        text.setPlaceholder("自动检测").setValue(this.plugin.settings.codexPath).onChange(async (value) => {
           this.plugin.settings.codexPath = value.trim() || DEFAULT_CODEX_PATH;
           await this.plugin.saveSettings();
         });
       });
     new Setting(this.containerEl)
       .setName("Node executable")
-      .setDesc("Optional Node path when Codex executable points to a JavaScript file after a GUI PATH issue.")
+      .setDesc("通常保持为空。仅当上方手动指定的是 codex.js 文件时，填写 Node 可执行文件路径。")
       .addText((text) => {
-        text.setValue(this.plugin.settings.nodePath).onChange(async (value) => {
+        text.setPlaceholder("通常无需设置").setValue(this.plugin.settings.nodePath).onChange(async (value) => {
           this.plugin.settings.nodePath = value.trim() || DEFAULT_NODE_PATH;
           await this.plugin.saveSettings();
         });
       });
+    let modelDropdown;
+    let effortDropdown;
+    new Setting(this.containerEl)
+      .setName("默认模型")
+      .setDesc("AskVault 提问时使用的 Codex 模型。模型列表由本地 Codex 提供。")
+      .addDropdown((dropdown) => {
+        modelDropdown = dropdown;
+        this.populateModelOptions(dropdown);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.model = value;
+          this.plugin.settings.effort = "";
+          await this.plugin.saveSettings();
+          this.populateEffortOptions(effortDropdown);
+        });
+      })
+      .addButton((button) => {
+        button.setButtonText("刷新模型").onClick(() => {
+          this.refreshModels(modelDropdown, effortDropdown);
+        });
+      });
+    new Setting(this.containerEl)
+      .setName("默认思考深度")
+      .setDesc("AskVault 提问时使用的推理强度。可选项随模型变化。")
+      .addDropdown((dropdown) => {
+        effortDropdown = dropdown;
+        this.populateEffortOptions(dropdown);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.effort = value;
+          await this.plugin.saveSettings();
+        });
+      });
+    this.refreshModels(modelDropdown, effortDropdown);
+    new Setting(this.containerEl)
+      .setName("HTTP Proxy")
+      .setDesc("可选代理地址，例如 http://127.0.0.1:7890。此配置因电脑和网络而异，不应随插件分发。")
+      .addText((text) => {
+        text.setValue(this.plugin.settings.proxy || "").onChange(async (value) => {
+          this.plugin.settings.proxy = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+  }
+
+  hide() {
+    this.loadSequence += 1;
+    super.hide();
+  }
+
+  async refreshModels(modelDropdown, effortDropdown) {
+    const sequence = ++this.loadSequence;
+    try {
+      const availableModels = await this.plugin.loadAvailableModels();
+      if (sequence !== this.loadSequence) {
+        return;
+      }
+      this.availableModels = availableModels;
+      this.populateModelOptions(modelDropdown);
+      this.populateEffortOptions(effortDropdown);
+    } catch (error) {
+      if (sequence === this.loadSequence) {
+        new Notice(`无法读取 Codex 模型列表：${formatError(error)}`);
+      }
+    }
+  }
+
+  populateModelOptions(dropdown) {
+    if (!dropdown) {
+      return;
+    }
+    const savedModel = this.plugin.settings.model || "";
+    dropdown.selectEl.empty();
+    dropdown.addOption("", "Codex 默认");
+    for (const model of this.availableModels) {
+      const value = model.model || model.id;
+      if (value) {
+        dropdown.addOption(value, value);
+      }
+    }
+    if (savedModel && !this.availableModels.some((model) => (model.model || model.id) === savedModel)) {
+      dropdown.addOption(savedModel, `${savedModel} (已保存)`);
+    }
+    dropdown.setValue(savedModel);
+  }
+
+  populateEffortOptions(dropdown) {
+    if (!dropdown) {
+      return;
+    }
+    const selectedModel = this.plugin.settings.model
+      ? this.availableModels.find((model) => (model.model || model.id) === this.plugin.settings.model)
+      : this.availableModels.find((model) => model.isDefault);
+    const supported = selectedModel?.supportedReasoningEfforts
+      ?.map((entry) => entry.reasoningEffort)
+      .filter(Boolean) || ["low", "medium", "high", "xhigh"];
+    const savedEffort = this.plugin.settings.effort || "";
+    dropdown.selectEl.empty();
+    dropdown.addOption("", "Codex 默认");
+    for (const effort of supported) {
+      dropdown.addOption(effort, effort);
+    }
+    if (savedEffort && !supported.includes(savedEffort)) {
+      this.plugin.settings.effort = "";
+      void this.plugin.saveSettings();
+    }
+    dropdown.setValue(this.plugin.settings.effort || "");
   }
 }
 
@@ -698,6 +805,105 @@ function formatLocalDate(date) {
 
 function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|]/g, "-").trim();
+}
+
+function resolveCodexLaunch(codexPath, nodePath) {
+  const configuredCodex = (codexPath || "").trim();
+  const configuredNode = (nodePath || "").trim();
+  const shouldAutoDetect = !configuredCodex || configuredCodex === CODEX_COMMAND;
+
+  if (!shouldAutoDetect && commandExists(configuredCodex) && (!configuredNode || commandExists(configuredNode))) {
+    return createCodexLaunch(configuredCodex, configuredNode, configuredNode ? `${configuredNode} ${configuredCodex}` : configuredCodex, "");
+  }
+
+  const detected = detectCodexExecutable() || CODEX_COMMAND;
+  const fallbackMessage = shouldAutoDetect
+    ? ""
+    : `保存的 Codex/Node 路径在本机不可用，已自动改用 ${detected}。请在设置中清空旧路径以保存可移植配置。`;
+  return createCodexLaunch(detected, "", `${detected}（自动检测）`, fallbackMessage);
+}
+
+function createCodexLaunch(codexPath, nodePath, description, fallbackMessage) {
+  if (nodePath) {
+    return {
+      command: nodePath,
+      args: [codexPath, "app-server"],
+      description,
+      fallbackMessage,
+    };
+  }
+  if (process.platform === "win32" && /\.cmd$/i.test(codexPath)) {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", `"${codexPath}" app-server`],
+      description,
+      fallbackMessage,
+    };
+  }
+  return {
+    command: codexPath,
+    args: ["app-server"],
+    description,
+    fallbackMessage,
+  };
+}
+
+function detectCodexExecutable() {
+  const executableName = process.platform === "win32" ? "codex.cmd" : CODEX_COMMAND;
+  const home = os.homedir();
+  const userInstallCandidates = process.platform === "win32"
+    ? [path.join(process.env.APPDATA || "", "npm", "codex.cmd")]
+    : [
+        path.join(home, ".npm-global", "bin", CODEX_COMMAND),
+        path.join(home, ".local", "bin", CODEX_COMMAND),
+        path.join(home, ".volta", "bin", CODEX_COMMAND),
+        path.join(home, ".bun", "bin", CODEX_COMMAND),
+      ];
+  const systemInstallCandidates = process.platform === "win32" ? [] : ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"];
+  const preferredInstall = userInstallCandidates.find((candidate) => candidate && commandExists(candidate));
+  const systemInstall = systemInstallCandidates.find((candidate) => commandExists(candidate));
+  return preferredInstall || findCommandOnPath(executableName) || systemInstall || "";
+}
+
+function findCommandOnPath(command) {
+  const pathValue = process.env.PATH || "";
+  for (const directory of pathValue.split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(directory, command);
+    if (commandExists(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function commandExists(command) {
+  if (!path.isAbsolute(command) && !command.includes("/") && !command.includes("\\")) {
+    return Boolean(findCommandOnPath(command));
+  }
+  try {
+    fs.accessSync(command, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function extractTextFromItem(item) {
+  if (!item) return "";
+  if (typeof item.content === "string") {
+    return item.content;
+  }
+  if (Array.isArray(item.content)) {
+    return item.content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        if (block && typeof block.text === "string") return block.text;
+        if (block && typeof block.string === "string") return block.string;
+        return "";
+      })
+      .join("");
+  }
+  return "";
 }
 
 module.exports = CodexVaultChatPlugin;

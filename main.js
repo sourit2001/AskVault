@@ -571,7 +571,7 @@ class CodexAppServerClient {
       clientInfo: {
         name: "ask_vault",
         title: "AskVault",
-        version: "0.1.2",
+        version: "0.1.3",
       },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
@@ -859,10 +859,14 @@ function detectCodexExecutable() {
         path.join(home, ".volta", "bin", CODEX_COMMAND),
         path.join(home, ".bun", "bin", CODEX_COMMAND),
       ];
+  const desktopAppCandidates = process.platform === "darwin"
+    ? ["/Applications/Codex.app/Contents/Resources/codex"]
+    : [];
   const systemInstallCandidates = process.platform === "win32" ? [] : ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"];
   const preferredInstall = userInstallCandidates.find((candidate) => candidate && commandExists(candidate));
+  const desktopInstall = desktopAppCandidates.find((candidate) => commandExists(candidate));
   const systemInstall = systemInstallCandidates.find((candidate) => commandExists(candidate));
-  return preferredInstall || findCommandOnPath(executableName) || systemInstall || "";
+  return preferredInstall || desktopInstall || findCommandOnPath(executableName) || systemInstall || "";
 }
 
 function findCommandOnPath(command) {

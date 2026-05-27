@@ -1,7 +1,7 @@
 {
   "id": "ask-vault",
   "name": "AskVault",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "minAppVersion": "1.7.0",
   "description": "Ask questions about your current note or vault using your local Codex CLI.",
   "author": "sourit2001",

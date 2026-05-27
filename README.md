@@ -23,21 +23,7 @@ AskVault 目前仅支持桌面版 Obsidian。每位用户需要使用自己的 C
 
 AskVault 已在 Obsidian 第三方插件目录中提供，用户不需要下载压缩包或复制插件文件。
 
-### 测试尚未发布的版本（BRAT）
-
-如需试用 GitHub 中尚未出现在插件市场的测试版本，可通过 BRAT 安装，无需手动处理插件文件：
-
-1. 在 Obsidian 的第三方插件市场中安装并启用 **BRAT**。
-2. 打开命令面板，运行 **BRAT: Add a beta plugin for testing**。
-3. 输入 GitHub 仓库地址：
-
-   ```text
-   https://github.com/sourit2001/AskVault
-   ```
-
-4. 安装完成后，进入 **设置 > 第三方插件**，启用 **AskVault**。
-
-BRAT 安装需要仓库已经发布包含 `main.js`、`manifest.json` 和 `styles.css` 的 GitHub Release；普通用户无需使用此方式。
+已经安装过 AskVault 的用户，请在第三方插件列表中检查更新并升级到 `0.1.2` 或更高版本。`0.1.2` 修复了从另一台电脑复制配置后无法连接的问题。
 
 ### 开始使用
 
@@ -123,6 +109,12 @@ Each user only needs to:
 1. Install and log in to Codex CLI with `npm install -g @openai/codex` and `codex login`.
 2. Install AskVault from Community Plugins.
 3. Leave the executable fields empty; set a proxy only if their own network requires it.
+
+For maintainers testing an unreleased build through BRAT, add:
+
+```text
+https://github.com/sourit2001/AskVault
+```
 
 ## License
 
